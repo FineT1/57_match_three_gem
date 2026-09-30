@@ -15,11 +15,11 @@ GEM_COLORS = [
 
 class Gem:
    
-    def __init__(self, color, target_row, col):
+    def __init__(self, color, target_row, col, is_bomb=False):
         self.color = color
         self.target_row = target_row
         self.col = col
-        # Start higher up to animate falling down
+        self.is_bomb= is_bomb # flag to identify bomb gems
         self.current_y = (target_row - 2) * TILE_SIZE
         self.target_y = target_row * TILE_SIZE
         self.fall_speed = 12.0
@@ -96,32 +96,50 @@ class Board:
     def find_matches(self):
         """Scan grid for horizontal and vertical 3-in-a-row color matches."""
         matched = set()
+        to_spawn_bombs=set()
 
         # Horizontal matches
         for r in range(GRID_SIZE):
-            for c in range(GRID_SIZE - 2):
-                if (
-                    self.grid[r][c]
-                    and self.grid[r][c + 1]
-                    and self.grid[r][c + 2]
-                    and self.grid[r][c].color == self.grid[r][c + 1].color == self.grid[r][c + 2].color
-                ):
-                    matched.update([(r, c), (r, c + 1), (r, c + 2)])
+            c = 0
+            while c < GRID_SIZE:
+                color = self.grid[r][c].color if self.grid[r][c] else None
+                if color is None:
+                    c += 1
+                    continue
+                match_len = 1
+                while c + match_len < GRID_SIZE and self.grid[r][c + match_len] and self.grid[r][c + match_len].color == color:
+                    match_len += 1
+                
+                if match_len >= 3:
+                    for i in range(match_len):
+                        matched.add((r, c + i))
+                    if match_len >= 4:
+                        to_spawn_bombs.add((r, c)) # Mark bomb spawn location
+                c += match_len
 
         # Vertical matches
-        for r in range(GRID_SIZE - 2):
-            for c in range(GRID_SIZE):
-                if (
-                    self.grid[r][c]
-                    and self.grid[r + 1][c]
-                    and self.grid[r + 2][c]
-                    and self.grid[r][c].color == self.grid[r + 1][c].color == self.grid[r + 2][c].color
-                ):
-                    matched.update([(r, c), (r + 1, c), (r + 2, c)])
+        for c in range(GRID_SIZE):
+            r = 0
+            while r < GRID_SIZE:
+                color = self.grid[r][c].color if self.grid[r][c] else None
+                if color is None:
+                    r += 1
+                    continue
+                match_len = 1
+                while r + match_len < GRID_SIZE and self.grid[r + match_len][c] and self.grid[r + match_len][c].color == color:
+                    match_len += 1
+                
+                if match_len >= 3:
+                    for i in range(match_len):
+                        matched.add((r + i, c))
+                    if match_len >= 4:
+                        to_spawn_bombs.add((r, c)) # Mark bomb spawn location
+                r += match_len
 
-        return matched
+        return matched, to_spawn_bombs
 
     def drop_and_refill(self):
+        for c in range(GRID_SIZE):
             empty_slots = 0
             for r in range(GRID_SIZE - 1, -1, -1):
                 if self.grid[r][c] is None:
@@ -138,17 +156,30 @@ class Board:
                 gem = Gem(color, r, c)
                 gem.current_y = -((empty_slots - r) * TILE_SIZE)
                 self.grid[r][c] = gem
-
     def resolve_matches(self):
         total_cleared = 0
+        multiplier=1 # 1x for initial match, 2x for secondary drop, 3x for tertiary
         while True:
-            matches = self.find_matches()
+            matches, bombs_to_spawn = self.find_matches()
             if not matches:
                 break
-            total_cleared += len(matches)
+            #Award points for this cascade later multiplied by the current chain level
+            expanded_clears = set(matches)
+            for r, c in matches:
+                if self.grid[r][c] and self.grid[r][c].is_bomb:
+                    # Detonate entire row and column!
+                    for i in range(GRID_SIZE):
+                        expanded_clears.add((r, i))
+                        expanded_clears.add((i, c))
+            
+            total_cleared += len(matches) * 10 * multiplier
+            multiplier += 1
             for r, c in matches:
                 self.grid[r][c] = None
             self.drop_and_refill()
+            for r, c in bombs_to_spawn:
+                if self.grid[r][c]:
+                    self.grid[r][c].is_bomb = True
         return total_cleared
 
     def process_swap(self, pos1, pos2):
@@ -160,14 +191,15 @@ class Board:
 
         # BUG SYMPTOM:
         # Move count decrements on EVERY swap attempt even invalid ones.
-        self.moves_remaining -= 1
-
         if not matches:
             self.swap_gems(pos1, pos2)  # Revert invalid swap
             return False
 
-        cleared = self.resolve_matches()
-        self.score += cleared * 10
+        self.moves_remaining -= 1
+
+
+        points_earned=self.resolve_matches()
+        self.score += points_earned
         return True
 
     def is_game_over(self):
@@ -179,6 +211,22 @@ class Board:
         if self.moves_remaining <= 0:
             return "LOSS"
         return None
+    def find_hint(self):
+        """Finds the first valid swap pair that produces a match."""
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                for dr, dc in [(0, 1), (1, 0)]:
+                    r2, c2 = r + dr, c + dc
+                    if 0 <= r2 < GRID_SIZE and 0 <= c2 < GRID_SIZE:
+                        # Swap temporarily
+                        self.grid[r][c], self.grid[r2][c2] = self.grid[r2][c2], self.grid[r][c]
+                        matches, _ = self.find_matches()
+                        # Swap back
+                        self.grid[r][c], self.grid[r2][c2] = self.grid[r2][c2], self.grid[r][c]
+
+                        if matches:
+                            return (r, c), (r2, c2)
+        return None
 
     def update(self):
         for r in range(GRID_SIZE):
@@ -186,7 +234,7 @@ class Board:
                 if self.grid[r][c]:
                     self.grid[r][c].update()
 
-    def render(self, surface):
+    def render(self, surface, hint_pair=None):
         board_rect = pygame.Rect(
             self.offset_x, self.offset_y, GRID_SIZE * TILE_SIZE, GRID_SIZE * TILE_SIZE
         )
@@ -213,3 +261,19 @@ class Board:
                     pygame.draw.rect(
                         surface, (255, 255, 255), sel_rect, width=4, border_radius=10
                     )
+                    
+                if gem.is_bomb:
+                    # Draw a white pulsing ring or dark center core for Bomb Gems
+                    center_x = x + TILE_SIZE // 2
+                    center_y = int(self.offset_y + gem.current_y + TILE_SIZE // 2)
+                    pygame.draw.circle(surface, (255, 255, 255), (center_x, center_y), TILE_SIZE // 4)
+                    pygame.draw.circle(surface, (0, 0, 0), (center_x, center_y), TILE_SIZE // 6)
+                
+                #Render hint indicator if active
+                if hint_pair:
+                    pulse = int((pygame.time.get_ticks() // 200) % 2) * 2  # Simple pulsing width
+                    for r, c in hint_pair:
+                        hx = self.offset_x + c * TILE_SIZE
+                        hy = self.offset_y + r * TILE_SIZE
+                        hint_rect = pygame.Rect(hx + 2, hy + 2, TILE_SIZE - 4, TILE_SIZE - 4)
+                        pygame.draw.rect(surface, (255, 255, 0), hint_rect, width=3 + pulse, border_radius=10)

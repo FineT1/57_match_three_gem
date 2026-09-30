@@ -10,11 +10,12 @@ class GameEngine:
         offset_y = (height - (GRID_SIZE * TILE_SIZE)) // 2 + 30
 
         self.board = Board(offset_x, offset_y, target_score=500, max_moves=20)
-
+        self.last_action_time = pygame.time.get_ticks()  # Track idle timer
         self.font_big = pygame.font.SysFont(None, 48)
         self.font_small = pygame.font.SysFont(None, 24)
 
     def handle_click(self, mouse_pos):
+        self.last_action_time = pygame.time.get_ticks()  # Reset idle timer on user interaction
         if self.board.is_game_over() or self.board.is_animating():
             return
 
@@ -63,6 +64,17 @@ class GameEngine:
         )
         screen.blit(
             inst_surf, (self.width // 2 - inst_surf.get_width() // 2, self.height - 25)
+        )
+        hint_pair = None
+        if pygame.time.get_ticks() - self.last_action_time > 5000:
+            hint_pair = self.board.find_hint()
+        
+        self.board.render(screen, hint_pair=hint_pair)
+        
+        inst_surf = self.font_small.render(
+            "Swap gems to match 3+. Press [R] to Restart.",
+            True,
+            (180, 180, 180),
         )
 
         result = self.board.check_result()
